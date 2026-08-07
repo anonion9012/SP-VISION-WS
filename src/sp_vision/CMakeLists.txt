@@ -3,10 +3,12 @@ cmake_minimum_required(VERSION 3.16.3)
 project(sp_vision)
 
 set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release)
 message(STATUS "--------------------CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}--------------------")
 
 find_package(OpenCV REQUIRED)
+find_package(cv_bridge REQUIRED)
 find_package(fmt REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(spdlog REQUIRED)
@@ -106,26 +108,56 @@ target_link_libraries(planner_test_offline ${OpenCV_LIBS} fmt::fmt yaml-cpp auto
 find_package(ament_cmake QUIET)
 find_package(rclcpp QUIET)
 find_package(std_msgs QUIET)
+find_package(sensor_msgs QUIET)
 find_package(rosidl_typesupport_cpp QUIET)
-find_package(sp_msgs QUIET)
 # 只有在找到 ROS 环境时才会添加 sentry 和 publish_test
-if(ament_cmake_FOUND AND rclcpp_FOUND AND std_msgs_FOUND AND rosidl_typesupport_cpp_FOUND AND sp_msgs_FOUND)
+if(ament_cmake_FOUND AND rclcpp_FOUND AND std_msgs_FOUND AND sensor_msgs_FOUND AND rosidl_typesupport_cpp_FOUND)
     # 编译 sentry 和 publish_test
-    add_executable(sentry src/sentry.cpp)
-    add_executable(sentry_bp src/sentry_bp.cpp)
-    add_executable(sentry_debug src/sentry_debug.cpp)
-    add_executable(sentry_multithread src/sentry_multithread.cpp)
-    add_executable(publish_test tests/publish_test.cpp)
-    add_executable(subscribe_test tests/subscribe_test.cpp)
-    add_executable(topic_loop_test tests/topic_loop_test.cpp)
+    add_executable(standard_ros2 src/standard_ros.cpp)
 
-    target_link_libraries(sentry ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(sentry_bp ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(sentry_debug ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(sentry_multithread ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(publish_test ${OpenCV_LIBS} fmt::fmt tools io auto_aim)
-    target_link_libraries(subscribe_test ${OpenCV_LIBS} fmt::fmt tools io)
-    target_link_libraries(topic_loop_test ${OpenCV_LIBS} fmt::fmt tools io)
+    target_link_libraries(standard_ros2 ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim auto_buff tools io)
+    ament_target_dependencies(standard_ros2 rclcpp sensor_msgs cv_bridge)
 else()
     message(STATUS "ROS2 environment not found, skipping ROS2-related code.")
 endif()
+
+################## Installation ##################
+set(SP_VISION_EXECUTABLES
+  standard
+  mt_standard
+  standard_mpc
+  auto_aim_debug_mpc
+  mt_auto_aim_debug
+  auto_buff_debug
+  auto_buff_debug_mpc
+  uav
+  uav_debug
+  capture
+  calibrate_camera
+  calibrate_handeye
+  calibrate_robotworld_handeye
+  split_video
+)
+
+if(TARGET standard_ros2)
+  list(APPEND SP_VISION_EXECUTABLES standard_ros2)
+endif()
+
+install(TARGETS ${SP_VISION_EXECUTABLES}
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY configs assets
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(FILES
+  autostart.sh
+  buff_layout.xml
+  mpc_layout.xml
+  LICENSE
+  readme.md
+  DESTINATION share/${PROJECT_NAME}
+)
+
+ament_package()
