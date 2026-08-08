@@ -77,11 +77,11 @@ class AutoAim : public rclcpp::Node {
     }
 
     void set_params() {
-        this->declare_parameter<std::string>("config_path", "configs/standard3.yaml");
+        this->declare_parameter<std::string>("config_path", "src/sp_vision/configs/standard3.yaml");
         config_path = this->get_parameter("config_path").as_string();
     }
 
-    std::string config_path{};
+    std::string config_path{"src/sp_vision/configs/standard3.yaml"};
 
     tools::Exiter exiter;
     tools::Plotter plotter;

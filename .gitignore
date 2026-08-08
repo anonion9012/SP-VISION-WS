@@ -2,6 +2,7 @@
 build/
 install/
 log/
+logs/
 # 大文件：数据包、视频、模型权重一律不进 git
 bags/
 *.db3
