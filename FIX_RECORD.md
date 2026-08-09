@@ -1,9 +1,23 @@
 # 开发记录
 ## <div align = "center">M2</div>
 
-### 完善 io/CMakeLists 与 ROS2 ros_imu 构建
+### 实现
 
-本次目标是完善 `src/sp_vision/io/CMakeLists.txt`，使非 ROS2 构建不编译 ROS2 相关源码，ROS2 环境下也只编译 `ros_imu`。
+本次目标是支持接受离线 bag 中的图像和四元数，并按数间戳匹配。
+
+### 修改
+1. `cboard.cpp` 使其支持从 ROS2 节点获取 imu 数据，并发布相应话题。
+2. `standard3.yaml` 新增 `ros_imu_connect_can` 参数，用于控制在有 ros_imu 节点但无持续接受数据并传出时是否启用 CAN 接口模块代为接受数据。
+3. `autoaim_msgs` 新增信息包。
+4. `ros_imu.cpp` 新增 ROS2 节点接受 imu 数据，并按原有算法写入安全队列。
+5. `path.hpp` 新增配置文件路径校准工具，并应用在 `yolov5.cpp`、`yolov8.cpp`、`yolov11.cpp`、`classifier.cpp`文件中。
+6. `standard_ros.cpp` 修复了无法退出的问题。
+
+### 已知问题
+
+- [ ] 最终输出指令有误。
+
+- [ ] detached IMU 线程没有生命周期所有者。
 
 ### 所遇问题与解决方案
 
@@ -58,7 +72,7 @@ source install/setup.bash && ros2 run sp_vision standard_ros2
 ## <div align = "center">M1</div>
 ### 实现
 M1实现了自瞄系统的主入口ROS2节点化，可使用`colcon build`构建并能成功运行。
-![构建示图](doc/colcon_build.png)
+![构建示图](shots/colcon_build.png)
 --- 
 
 ### 修改
@@ -69,7 +83,7 @@ M1实现了自瞄系统的主入口ROS2节点化，可使用`colcon build`构建
 
 ### 已知问题
 
-- [ ] 暂无测试程序对数据流程进行测试
+- [x] 暂无测试程序对数据流程进行测试
 
 - [ ] 原有开源项目的代码全数保留，导致编译时间过长
 

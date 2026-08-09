@@ -88,11 +88,11 @@ class AutoAim : public rclcpp::Node {
         const auto stamp_ns =
             static_cast<int64_t>(msg->header.stamp.sec) * 1'000'000'000LL +
             static_cast<int64_t>(msg->header.stamp.nanosec);
-        std::chrono::steady_clock::time_point t{std::chrono::nanoseconds(stamp_ns)};
-        Eigen::Quaterniond q{cboard.imu_at(t)};
+        const std::chrono::steady_clock::time_point t{std::chrono::nanoseconds(stamp_ns)};
+        const Eigen::Quaterniond q{cboard.imu_at(t)};
         std::println(">>>>>{} : {},{},{},{}", t.time_since_epoch().count(), q.w(), q.x(), q.y(), q.z());
 
-        auto mode = cboard.mode;
+        const auto mode = cboard.mode;
         
         if (mode != last_mode) { 
             tools::logger()->info("Switch to {}", io::MODES[mode]);
