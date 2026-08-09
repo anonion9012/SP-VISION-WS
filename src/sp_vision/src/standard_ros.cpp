@@ -3,17 +3,22 @@
 // c++ standard
 #include <print>
 #include <chrono>
+#include <string>
+#include <thread>
 
 // opencv
 #include <opencv2/opencv.hpp>
 #include <cv_bridge/cv_bridge.h>
 
 // ros2
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "autoaim_msgs/msg/orienta.hpp"
 
 // sp_vision
 #include "io/cboard.hpp"
+#include "io/ros_imu/ros_imu.hpp"
 #include "tasks/auto_aim/aimer.hpp"
 #include "tasks/auto_aim/multithread/commandgener.hpp"
 #include "tasks/auto_aim/shooter.hpp"
@@ -27,11 +32,26 @@
 #include "tools/plotter.hpp"
 #include "tools/recorder.hpp"
 
+namespace
+{
+std::string default_config_path()
+{
+    return ament_index_cpp::get_package_share_directory("sp_vision") + "/configs/standard3.yaml";
+}
+}
 
 //自瞄节点
 class AutoAim : public rclcpp::Node {
     public:
-    AutoAim() : Node("auto_aim") {
+    AutoAim()
+        : Node("auto_aim"),
+          imu(std::make_shared<io::ROSIMU>()),
+          cboard(
+              config_path,
+              [this](std::chrono::steady_clock::time_point timestamp) {
+                  return imu->imu_at(timestamp);
+              })
+    {
         set_params();
         std::println(">>>>>AutoAim node started<<<<<");
         std::println("config_path: {}", config_path);
@@ -43,6 +63,19 @@ class AutoAim : public rclcpp::Node {
                 this->callback(msg);
             }
         );
+        try{
+            std::thread([this]() { rclcpp::spin(imu); }).detach();
+        } catch (const std::exception & e) {
+            std::println("[ERROR] Failed to start IMU node: {}", e.what());
+            tools::logger()->error("[ERROR] Failed to start IMU node: {}", e.what());
+            std::exit(1);
+        }
+        
+    }
+
+    ~AutoAim() {
+        tools::logger()->info("NONE released.");
+        std::println(">>>>>AutoAim node stopped<<<<<");
     }
 
     private:
@@ -73,22 +106,22 @@ class AutoAim : public rclcpp::Node {
         auto command = aimer.aim(targets, t, cboard.bullet_speed);
 
         cboard.send(command);
-        
     }
 
     void set_params() {
-        this->declare_parameter<std::string>("config_path", "src/sp_vision/configs/standard3.yaml");
+        this->declare_parameter<std::string>("config_path", config_path);
         config_path = this->get_parameter("config_path").as_string();
+
     }
 
-    std::string config_path{"src/sp_vision/configs/standard3.yaml"};
+    std::string config_path{default_config_path()};
 
     tools::Exiter exiter;
     tools::Plotter plotter;
     tools::Recorder recorder;
 
-    io::CBoard cboard{config_path};
-    io::Camera camera{config_path};
+    std::shared_ptr<io::ROSIMU> imu;
+    io::CBoard cboard;
 
     auto_aim::YOLO detector{config_path, false};
     auto_aim::Solver solver{config_path};

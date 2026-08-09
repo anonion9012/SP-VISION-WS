@@ -37,12 +37,14 @@ const std::vector<std::string> SHOOT_MODES = {"left_shoot", "right_shoot", "both
 class CBoard
 {
 public:
+  using ImuProvider = std::function<Eigen::Quaterniond(std::chrono::steady_clock::time_point)>;
+
   double bullet_speed;
   Mode mode;
   ShootMode shoot_mode;
   double ft_angle;  //无人机专有
 
-  CBoard(const std::string & config_path);
+  CBoard(const std::string & config_path, ImuProvider imu_provider = {});
 
   Eigen::Quaterniond imu_at(std::chrono::steady_clock::time_point timestamp);
 
@@ -55,6 +57,7 @@ private:
     std::chrono::steady_clock::time_point timestamp;
   };
 
+  ImuProvider imu_provider_;
   tools::ThreadSafeQueue<IMUData> queue_;  // 必须在can_之前初始化，否则存在死锁的可能
   SocketCAN can_;
   IMUData data_ahead_;

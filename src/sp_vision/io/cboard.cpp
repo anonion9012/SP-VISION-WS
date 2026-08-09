@@ -1,26 +1,37 @@
 #include "cboard.hpp"
 
+#include <utility>
+
 #include "tools/math_tools.hpp"
 #include "tools/yaml.hpp"
 
 namespace io
 {
-CBoard::CBoard(const std::string & config_path)
+CBoard::CBoard(const std::string & config_path, ImuProvider imu_provider)
 : mode(Mode::idle),
   shoot_mode(ShootMode::left_shoot),
   bullet_speed(0),
+  imu_provider_(std::move(imu_provider)),
   queue_(5000),
   can_(read_yaml(config_path), std::bind(&CBoard::callback, this, std::placeholders::_1))
 // 注意: callback的运行会早于Cboard构造函数的完成
 {
-  tools::logger()->info("[Cboard] Waiting for q...");
-  queue_.pop(data_ahead_);
-  queue_.pop(data_behind_);
+  if (!imu_provider_) {
+    tools::logger()->info("[Cboard] Waiting for q...");
+    queue_.pop(data_ahead_);
+    queue_.pop(data_behind_);
+  } else {
+    tools::logger()->info("[Cboard] Using external IMU provider.");
+  }
   tools::logger()->info("[Cboard] Opened.");
 }
 
 Eigen::Quaterniond CBoard::imu_at(std::chrono::steady_clock::time_point timestamp)
 {
+  if (imu_provider_) {
+    return imu_provider_(timestamp);
+  }
+
   if (data_behind_.timestamp < timestamp) data_ahead_ = data_behind_;
 
   while (true) {
@@ -70,6 +81,10 @@ void CBoard::callback(const can_frame & frame)
   auto timestamp = std::chrono::steady_clock::now();
 
   if (frame.can_id == quaternion_canid_) {
+    if (imu_provider_) {
+      return;
+    }
+
     auto x = (int16_t)(frame.data[0] << 8 | frame.data[1]) / 1e4;
     auto y = (int16_t)(frame.data[2] << 8 | frame.data[3]) / 1e4;
     auto z = (int16_t)(frame.data[4] << 8 | frame.data[5]) / 1e4;
