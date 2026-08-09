@@ -15,3 +15,5 @@ bags/
 # review
 ws_review/
 .brooks*
+# colcon config
+colcon_defaults.yaml
