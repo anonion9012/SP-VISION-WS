@@ -7,6 +7,7 @@
 
 #include "tools/img_tools.hpp"
 #include "tools/logger.hpp"
+#include "tools/path.hpp"
 
 namespace auto_aim
 {
@@ -15,7 +16,7 @@ YOLO11::YOLO11(const std::string & config_path, bool debug)
 {
   auto yaml = YAML::LoadFile(config_path);
 
-  model_path_ = yaml["yolo11_model_path"].as<std::string>();
+  model_path_ = tools::resolve_path(config_path, yaml["yolo11_model_path"].as<std::string>());
   device_ = yaml["device"].as<std::string>();
   binary_threshold_ = yaml["threshold"].as<double>();
   min_confidence_ = yaml["min_confidence"].as<double>();
@@ -49,8 +50,19 @@ YOLO11::YOLO11(const std::string & config_path, bool debug)
 
   // TODO: ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY)
   model = ppp.build();
-  compiled_model_ = core_.compile_model(
-    model, device_, ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY));
+  try {
+    compiled_model_ = core_.compile_model(
+      model, device_, ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY));
+  } catch (const ov::Exception & e) {
+    if (device_ == "CPU") {
+      throw;
+    }
+    tools::logger()->warn(
+      "[YOLO11] Failed to compile model on {}: {}. Falling back to CPU.", device_, e.what());
+    device_ = "CPU";
+    compiled_model_ = core_.compile_model(
+      model, device_, ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY));
+  }
 }
 
 std::list<Armor> YOLO11::detect(const cv::Mat & raw_img, int frame_count)

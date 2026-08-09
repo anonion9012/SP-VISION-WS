@@ -1,6 +1,59 @@
 # 开发记录
 ## <div align = "center">M2</div>
 
+### 完善 io/CMakeLists 与 ROS2 ros_imu 构建
+
+本次目标是完善 `src/sp_vision/io/CMakeLists.txt`，使非 ROS2 构建不编译 ROS2 相关源码，ROS2 环境下也只编译 `ros_imu`。
+
+### 所遇问题与解决方案
+
+#### 问题一：`ros_imu` 源码存在编译错误
+
+启用 ROS2 `ros_imu` 编译后，暴露出 `create_subscription(...)` 语句缺少分号、缺少 `tools/logger.hpp`、回调参数使用 `ConstUniquePtr` 导致 unique_ptr 删除器类型不匹配等问题。
+
+解决方案：补充分号和 logger 头文件，将订阅回调类型改为 `autoaim_msgs::msg::Orienta::ConstSharedPtr`，并让 ROS 回调直接把四元数数据写入线程安全队列。
+
+#### 问题二：`ROSIMU` 构造阶段存在阻塞风险
+
+原 `ROSIMU` 构造函数中启动了未定义的 `get_imu_data_thread()`，随后立即 `queue_.pop()` 两次等待 IMU 数据。ROS2 节点还未开始 spin 时构造函数就等待队列数据，存在构造阶段死锁风险。
+
+解决方案：移除未实现的后台线程逻辑，改为在 `imu_at()` 首次调用时再从队列读取两帧初始数据用于插值。
+
+#### 问题三：`ros2 run` 下模型资源路径依赖当前工作目录
+
+source 工作区后再次运行节点，程序在加载分类模型时报错 `Can't read ONNX file: assets/tiny_resnet.onnx`。原因是配置文件中的模型路径为 `assets/...`，原代码直接按进程当前工作目录解析路径；通过 `ros2 run` 启动时当前目录不一定是 `src/sp_vision`，因此安装后的资源文件无法被稳定找到。
+
+解决方案：新增路径解析工具 `tools/path.hpp`。当配置中的路径不是绝对路径且当前目录下不存在该文件时，按 `config_path` 所在包目录解析，例如将安装环境中的 `assets/tiny_resnet.onnx` 解析到 `install/sp_vision/share/sp_vision/assets/tiny_resnet.onnx`。分类器和 YOLOV5、YOLOV8、YOLO11 的模型加载均接入该路径解析逻辑。
+
+#### 问题四：`standard_ros2` 默认配置路径仍依赖源码目录
+
+`standard_ros.cpp` 原默认参数为 `src/sp_vision/configs/standard3.yaml`。从工作区根目录运行时该路径可能存在，但通过安装空间或其他目录运行时并不可靠；从 `src/sp_vision` 目录运行则会直接找不到配置文件。
+
+解决方案：使用 `ament_index_cpp::get_package_share_directory("sp_vision")` 获取 ROS2 安装后的 package share 目录，将默认配置路径设置为 `share/sp_vision/configs/standard3.yaml`；同时在 `CMakeLists.txt` 和 `package.xml` 中补充 `ament_index_cpp` 依赖。
+
+#### 问题五：OpenVINO 配置为 GPU，但当前机器没有可用 GPU 设备
+
+修复模型路径后，节点继续在 YOLO 模型编译阶段崩溃。配置文件中 `device: GPU`，但当前环境没有 OpenVINO 可用的 GPU 设备，报错 `no supported devices found`。
+
+解决方案：不切换 ONNX Runtime，保留原 OpenVINO 推理逻辑。在 YOLOV5、YOLOV8、YOLO11 的模型编译处增加最小 fallback：按配置设备编译失败且设备不是 CPU 时，记录警告并自动降级到 CPU 重新编译模型。模型、输入预处理、后处理逻辑保持不变。
+
+#### 问题六：本机缺少 CAN 接口导致 SocketCAN 警告
+
+节点成功启动后仍持续输出 `SocketCAN::open() failed: Error getting interface index!`。该问题来自当前机器没有配置文件中指定的 CAN 网络接口，属于硬件/系统网络接口环境问题，不是模型加载或 ROS2 节点构建错误。
+
+解决方案：本次未改变 CAN 原有逻辑，仅确认该警告不再导致节点崩溃。实际机器人运行时需要确保配置中的 `can_interface` 对应系统中存在的 CAN 接口。
+
+### 验证结果
+
+执行以下命令完成验证：
+
+```bash
+colcon build --packages-up-to sp_vision --event-handlers console_direct+
+source install/setup.bash && ros2 run sp_vision standard_ros2
+```
+
+验证结果：`autoaim_msgs` 和 `sp_vision` 均构建成功，`standard_ros2` 已成功编译、链接并安装。执行 `ros2 run sp_vision standard_ros2` 后，节点不再因 ONNX 路径或 OpenVINO GPU 设备不可用而崩溃，能够完成初始化并进入 ROS2 spin；剩余 SocketCAN 警告为本机缺少 CAN 接口导致。
+
 
 ## <div align = "center">M1</div>
 ### 实现
