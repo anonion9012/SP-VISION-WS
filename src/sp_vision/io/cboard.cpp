@@ -12,10 +12,28 @@ CBoard::CBoard(const std::string & config_path, ImuProvider imu_provider)
   shoot_mode(ShootMode::left_shoot),
   bullet_speed(0),
   imu_provider_(std::move(imu_provider)),
-  queue_(5000),
-  can_(read_yaml(config_path), std::bind(&CBoard::callback, this, std::placeholders::_1))
+  queue_(5000)
 // 注意: callback的运行会早于Cboard构造函数的完成
 {
+  auto can_interface = read_yaml(config_path);
+  auto should_connect_can = !imu_provider_ || ros_imu_connect_can_;
+
+  if (should_connect_can) {
+    can_ = std::make_unique<SocketCAN>(
+      can_interface, std::bind(&CBoard::callback, this, std::placeholders::_1));
+  } else {
+    tools::logger()->info("[Cboard] Skipped SocketCAN connection.");
+  }
+
+#ifdef SP_VISION_HAS_ROS2
+  if (rclcpp::ok()) {
+    ros_node_ = std::make_shared<rclcpp::Node>("cboard_command_publisher");
+    command_pub_ =
+      ros_node_->create_publisher<std_msgs::msg::UInt8MultiArray>(ros_command_topic_, 10);
+    tools::logger()->info("[Cboard] ROS command publisher: {}", ros_command_topic_);
+  }
+#endif
+
   if (!imu_provider_) {
     tools::logger()->info("[Cboard] Waiting for q...");
     queue_.pop(data_ahead_);
@@ -69,8 +87,18 @@ void CBoard::send(Command command) const
   frame.data[6] = (int16_t)(command.horizon_distance * 1e4) >> 8;
   frame.data[7] = (int16_t)(command.horizon_distance * 1e4);
 
+#ifdef SP_VISION_HAS_ROS2
+  if (command_pub_) {
+    std_msgs::msg::UInt8MultiArray msg;
+    msg.data.assign(frame.data, frame.data + frame.can_dlc);
+    command_pub_->publish(msg);
+  }
+#endif
+
+  if (!can_) return;
+
   try {
-    can_.write(&frame);
+    can_->write(&frame);
   } catch (const std::exception & e) {
     tools::logger()->warn("{}", e.what());
   }
@@ -125,6 +153,8 @@ std::string CBoard::read_yaml(const std::string & config_path)
   quaternion_canid_ = tools::read<int>(yaml, "quaternion_canid");
   bullet_speed_canid_ = tools::read<int>(yaml, "bullet_speed_canid");
   send_canid_ = tools::read<int>(yaml, "send_canid");
+  if (yaml["ros_imu_connect_can"]) ros_imu_connect_can_ = yaml["ros_imu_connect_can"].as<bool>();
+  if (yaml["ros_command_topic"]) ros_command_topic_ = yaml["ros_command_topic"].as<std::string>();
 
   if (!yaml["can_interface"]) {
     throw std::runtime_error("Missing 'can_interface' in YAML configuration.");

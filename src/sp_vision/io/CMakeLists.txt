@@ -40,10 +40,11 @@ target_link_libraries(io MvCameraControl MVSDK usb-1.0 yaml-cpp serial)
 ################## 检查 ROS 环境 ##################
 find_package(ament_cmake QUIET)
 find_package(rclcpp QUIET)
+find_package(std_msgs QUIET)
 find_package(autoaim_msgs QUIET)
 
 # 如果找不到 ROS 环境，则跳过 ROS 相关的部分
-if(NOT ament_cmake_FOUND OR NOT rclcpp_FOUND OR NOT autoaim_msgs_FOUND)
+if(NOT ament_cmake_FOUND OR NOT rclcpp_FOUND OR NOT std_msgs_FOUND OR NOT autoaim_msgs_FOUND)
     message(WARNING "ROS2 not found, skipping ROS2 specific code.")
 else()
     message(STATUS "ROS2 environment found, compiling ros_imu.")
@@ -52,5 +53,6 @@ else()
     target_sources(io PRIVATE ros_imu/ros_imu.cpp)
 
     # 设置 ROS2 依赖
-    ament_target_dependencies(io rclcpp autoaim_msgs)
+    ament_target_dependencies(io rclcpp std_msgs autoaim_msgs)
+    target_compile_definitions(io PUBLIC SP_VISION_HAS_ROS2)
 endif()

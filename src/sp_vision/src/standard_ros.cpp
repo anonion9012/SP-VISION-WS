@@ -78,6 +78,8 @@ class AutoAim : public rclcpp::Node {
         std::println(">>>>>AutoAim node stopped<<<<<");
     }
 
+    bool exit_requested() const { return exiter.exit(); }
+
     private:
     // @msg 接收图像信息
     // $msg->header.stamp 单调时钟（steady_clock）的纳秒值，转换为chrono::steady_clock::time_point类型
@@ -88,6 +90,7 @@ class AutoAim : public rclcpp::Node {
             static_cast<int64_t>(msg->header.stamp.nanosec);
         std::chrono::steady_clock::time_point t{std::chrono::nanoseconds(stamp_ns)};
         Eigen::Quaterniond q{cboard.imu_at(t)};
+        std::println(">>>>>{} : {},{},{},{}", t.time_since_epoch().count(), q.w(), q.x(), q.y(), q.z());
 
         auto mode = cboard.mode;
         
@@ -138,7 +141,11 @@ class AutoAim : public rclcpp::Node {
 int main(int argc, char * argv[]) {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<AutoAim>();
-    rclcpp::spin(node);
+    while (rclcpp::ok() && !node->exit_requested()) {
+        rclcpp::spin_some(node);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    node.reset();
     rclcpp::shutdown();
     return 0;
 }
