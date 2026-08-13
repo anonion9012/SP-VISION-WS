@@ -7,10 +7,10 @@ namespace io {
         orienta_sub_ = this->create_subscription<autoaim_msgs::msg::Orienta>(
             "imu/quaternion",
             10,
-            [this](autoaim_msgs::msg::Orienta::ConstSharedPtr msg) {
+            [this](autoaim_msgs::msg::Orienta::ConstSharedPtr msg)
+            {
                 this->callback(msg);
-            }
-        );
+            });
         tools::logger()->info("[ROSIMU] initialized");
     }
 
@@ -23,10 +23,14 @@ namespace io {
         queue_.push({q, timestamp});
     }
 
-    Eigen::Quaterniond ROSIMU::imu_at(std::chrono::steady_clock::time_point timestamp) {
+    std::optional<Eigen::Quaterniond> ROSIMU::try_imu_at(
+        std::chrono::steady_clock::time_point timestamp,
+        std::chrono::milliseconds timeout) {
         if (!has_initial_data_) {
-            queue_.pop(data_ahead_);
-            queue_.pop(data_behind_);
+            if (!queue_.pop_for(data_ahead_, timeout) ||
+                !queue_.pop_for(data_behind_, timeout)) {
+                return std::nullopt;
+            }
             has_initial_data_ = true;
         }
 
@@ -35,7 +39,9 @@ namespace io {
 
         while (true)
         {
-            queue_.pop(data_behind_);
+            if (!queue_.pop_for(data_behind_, timeout)) {
+                return std::nullopt;
+            }
             if (data_behind_.timestamp > timestamp)
                 break;
             data_ahead_ = data_behind_;

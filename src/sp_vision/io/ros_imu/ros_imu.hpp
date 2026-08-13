@@ -4,6 +4,8 @@
 
 #include <Eigen/Geometry>
 #include <array>
+#include <optional>
+#include <chrono>
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
@@ -18,7 +20,9 @@ namespace io {
         ROSIMU();
         ~ROSIMU();
 
-        Eigen::Quaterniond imu_at(std::chrono::steady_clock::time_point timestamp);
+        std::optional<Eigen::Quaterniond> try_imu_at(
+            std::chrono::steady_clock::time_point timestamp,
+            std::chrono::milliseconds timeout);
 
     private:
         struct IMUData

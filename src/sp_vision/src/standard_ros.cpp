@@ -3,6 +3,7 @@
 // c++ standard
 #include <print>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -15,6 +16,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "autoaim_msgs/msg/orienta.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
 
 // sp_vision
 #include "io/cboard.hpp"
@@ -49,7 +51,8 @@ class AutoAim : public rclcpp::Node {
           cboard(
               config_path,
               [this](std::chrono::steady_clock::time_point timestamp) {
-                  return imu->imu_at(timestamp);
+                  return imu->try_imu_at(timestamp, std::chrono::milliseconds(100))
+                      .value_or(Eigen::Quaterniond::Identity());
               })
     {
         set_params();
@@ -63,8 +66,9 @@ class AutoAim : public rclcpp::Node {
                 this->callback(msg);
             }
         );
+        armor_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("debug/armor_point", 10);
         try{
-            std::thread([this]() { rclcpp::spin(imu); }).detach();
+            imu_thread = std::thread([this]() { rclcpp::spin(imu); });
         } catch (const std::exception & e) {
             std::println("[ERROR] Failed to start IMU node: {}", e.what());
             tools::logger()->error("[ERROR] Failed to start IMU node: {}", e.what());
@@ -74,7 +78,10 @@ class AutoAim : public rclcpp::Node {
     }
 
     ~AutoAim() {
-        tools::logger()->info("NONE released.");
+        if (imu_thread.joinable()) {
+            imu_thread.join();
+        }
+        tools::logger()->info("ROS_imu stopped.");
         std::println(">>>>>AutoAim node stopped<<<<<");
     }
 
@@ -82,14 +89,17 @@ class AutoAim : public rclcpp::Node {
 
     private:
     // @msg 接收图像信息
-    // $msg->header.stamp 单调时钟（steady_clock）的纳秒值，转换为chrono::steady_clock::time_point类型
+    // Orienta 消息没有时间戳，IMU 也使用接收时的 steady_clock，因此图像使用当前本机时间。
     void callback(sensor_msgs::msg::Image::ConstSharedPtr msg) {
         cv::Mat img{cv_bridge::toCvShare(msg, "bgr8")->image};
-        const auto stamp_ns =
-            static_cast<int64_t>(msg->header.stamp.sec) * 1'000'000'000LL +
-            static_cast<int64_t>(msg->header.stamp.nanosec);
-        const std::chrono::steady_clock::time_point t{std::chrono::nanoseconds(stamp_ns)};
-        const Eigen::Quaterniond q{cboard.imu_at(t)};
+        const auto t = std::chrono::steady_clock::now();
+        const auto imu_q = imu->try_imu_at(t, std::chrono::milliseconds(100));
+        if (!imu_q) {
+            std::println("[WARN] IMU data timeout, using the last valid orientation.");
+        } else {
+            last_imu = *imu_q;
+        }
+        const auto & q = last_imu;
         std::println(">>>>>{} : {},{},{},{}", t.time_since_epoch().count(), q.w(), q.x(), q.y(), q.z());
 
         const auto mode = cboard.mode;
@@ -103,6 +113,30 @@ class AutoAim : public rclcpp::Node {
         solver.set_R_gimbal2world(q);
 
         auto armors = detector.detect(img);
+
+        for (const auto& armor : armors) {
+            geometry_msgs::msg::PointStamped msg;
+
+            msg.header.set__stamp(rclcpp::Time(t.time_since_epoch().count()));
+
+            for (int i = 0; i < armor.points.size(); ++i) {
+                const auto& point = armor.points[i];
+                const std::string name =
+                    std::string(
+                        auto_aim::COLORS[armor.color] + "_" +
+                        auto_aim::ARMOR_NAMES[armor.name] + "_" +
+                        auto_aim::ARMOR_TYPES[armor.type] + "_" +
+                        std::to_string(i)
+                    );
+                msg.header.set__frame_id(name);
+
+                msg.point.set__x(point.x);
+                msg.point.set__y(point.y);
+                msg.point.set__z(0.0);
+            }
+
+            armor_point_pub->publish(msg);
+        }
 
         auto targets = tracker.track(armors, t);
 
@@ -124,6 +158,7 @@ class AutoAim : public rclcpp::Node {
     tools::Recorder recorder;
 
     std::shared_ptr<io::ROSIMU> imu;
+    std::thread imu_thread;
     io::CBoard cboard;
 
     auto_aim::YOLO detector{config_path, false};
@@ -133,8 +168,10 @@ class AutoAim : public rclcpp::Node {
     auto_aim::Shooter shooter{config_path};
 
     io::Mode last_mode{io::Mode::idle};
+    Eigen::Quaterniond last_imu{Eigen::Quaterniond::Identity()};
 
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub;
+    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr armor_point_pub;
 
 };
 
@@ -145,7 +182,7 @@ int main(int argc, char * argv[]) {
         rclcpp::spin_some(node);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    node.reset();
     rclcpp::shutdown();
+    node.reset();
     return 0;
 }

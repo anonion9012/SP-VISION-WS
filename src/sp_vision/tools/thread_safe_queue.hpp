@@ -2,6 +2,7 @@
 #define TOOLS__THREAD_SAFE_QUEUE_HPP
 
 #include <condition_variable>
+#include <chrono>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -49,6 +50,23 @@ public:
 
     value = queue_.front();
     queue_.pop();
+  }
+
+  // 在指定的时间范围内尝试从队列中取出一个元素，如果超时仍未取到则立即返回，避免线程无限阻塞。
+  // @value 引用参数，用于存放取出的元素（出队后通过引用返回）。
+  // @timeout 一个 std::chrono::duration 类型的超时时长，例如 std::chrono::milliseconds(100)。
+  template <typename Rep, typename Period>
+  bool pop_for(T & value, const std::chrono::duration<Rep, Period> & timeout)
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+
+    if (!not_empty_condition_.wait_for(lock, timeout, [this] { return !queue_.empty(); })) {
+      return false;
+    }
+
+    value = queue_.front();
+    queue_.pop();
+    return true;
   }
 
   T pop()
