@@ -3,7 +3,7 @@
 // c++ standard
 #include <print>
 #include <chrono>
-#include <optional>
+#include <cstddef>
 #include <string>
 #include <thread>
 
@@ -16,7 +16,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "autoaim_msgs/msg/orienta.hpp"
-#include "geometry_msgs/msg/point_stamped.hpp"
 
 // sp_vision
 #include "io/cboard.hpp"
@@ -66,7 +65,7 @@ class AutoAim : public rclcpp::Node {
                 this->callback(msg);
             }
         );
-        armor_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("debug/armor_point", 10);
+        armor_img_pub = this->create_publisher<sensor_msgs::msg::Image>("debug/armor_img", 10);
         try{
             imu_thread = std::thread([this]() { rclcpp::spin(imu); });
         } catch (const std::exception & e) {
@@ -79,6 +78,10 @@ class AutoAim : public rclcpp::Node {
 
     ~AutoAim() {
         if (imu_thread.joinable()) {
+            // rclcpp::spin(imu) only returns after the context is shut down.
+            if (rclcpp::ok()) {
+                rclcpp::shutdown();
+            }
             imu_thread.join();
         }
         tools::logger()->info("ROS_imu stopped.");
@@ -113,29 +116,25 @@ class AutoAim : public rclcpp::Node {
         solver.set_R_gimbal2world(q);
 
         auto armors = detector.detect(img);
-
         for (const auto& armor : armors) {
-            geometry_msgs::msg::PointStamped msg;
-
-            msg.header.set__stamp(rclcpp::Time(t.time_since_epoch().count()));
-
-            for (int i = 0; i < armor.points.size(); ++i) {
-                const auto& point = armor.points[i];
-                const std::string name =
-                    std::string(
-                        auto_aim::COLORS[armor.color] + "_" +
-                        auto_aim::ARMOR_NAMES[armor.name] + "_" +
-                        auto_aim::ARMOR_TYPES[armor.type] + "_" +
-                        std::to_string(i)
-                    );
-                msg.header.set__frame_id(name);
-
-                msg.point.set__x(point.x);
-                msg.point.set__y(point.y);
-                msg.point.set__z(0.0);
-
-                armor_point_pub->publish(msg);
+            if (armor.points.empty()) {
+                continue;
             }
+
+            tools::draw_points(img, armor.points);
+
+            const auto name_index = static_cast<std::size_t>(armor.name);
+            if (name_index < auto_aim::ARMOR_NAMES.size()) {
+                tools::draw_text(img, auto_aim::ARMOR_NAMES[name_index], armor.points[0],
+                                 {255, 255, 255}, 2);
+            }
+        }
+
+        // Debug output is optional and published once per input frame. A
+        // missing debug viewer does not affect the main auto-aim pipeline.
+        if (armor_img_pub) {
+            const auto debug_image = cv_bridge::CvImage(msg->header, "bgr8", img).toImageMsg();
+            armor_img_pub->publish(*debug_image);
         }
 
         auto targets = tracker.track(armors, t);
@@ -171,7 +170,7 @@ class AutoAim : public rclcpp::Node {
     Eigen::Quaterniond last_imu{Eigen::Quaterniond::Identity()};
 
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub;
-    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr armor_point_pub;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr armor_img_pub;
 
 };
 
