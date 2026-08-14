@@ -1,9 +1,40 @@
 # 开发记录
+
+## <div align = "center">M4</div>
+
+
+
+## <div align = "center">M3</div>
+
+### 实现
+本次实现装甲板检测与 debug 输出。
+
+![3-1](shots/M3-1.png)
+![3-2](shots/M3-2.png)
+
+---
+
+### 修改
+1. `thread_safe_queue` 新增尝试读取方法。
+2. `ros_imu` 修改 imu 数据获取，增加超时读取方法，避免永久阻塞。
+3. `standard_ros` 识别器识别后新增 debug 话题。
+
+---
+
+### 已知问题
+- [ ] debug 模块无法输出相应 Header。
+
+--- 
+
+### 所遇问题与解决方案
+
 ## <div align = "center">M2</div>
 
 ### 实现
 
 本次目标是支持接受离线 bag 中的图像和四元数，并按数间戳匹配。
+
+--- 
 
 ### 修改
 1. `cboard.cpp` 使其支持从 ROS2 节点获取 imu 数据，并发布相应话题。
@@ -13,11 +44,15 @@
 5. `path.hpp` 新增配置文件路径校准工具，并应用在 `yolov5.cpp`、`yolov8.cpp`、`yolov11.cpp`、`classifier.cpp`文件中。
 6. `standard_ros.cpp` 修复了无法退出的问题。
 
+---
+
 ### 已知问题
 
 - [ ] 最终输出指令有误。
 
-- [ ] detached IMU 线程没有生命周期所有者。
+- [x] ~detached IMU 线程没有生命周期所有者。~
+
+---
 
 ### 所遇问题与解决方案
 
@@ -83,7 +118,7 @@ M1实现了自瞄系统的主入口ROS2节点化，可使用`colcon build`构建
 
 ### 已知问题
 
-- [x] 暂无测试程序对数据流程进行测试
+- [x] ~暂无测试程序对数据流程进行测试~
 
 - [ ] 原有开源项目的代码全数保留，导致编译时间过长
 
