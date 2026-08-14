@@ -133,9 +133,9 @@ class AutoAim : public rclcpp::Node {
                 msg.point.set__x(point.x);
                 msg.point.set__y(point.y);
                 msg.point.set__z(0.0);
-            }
 
-            armor_point_pub->publish(msg);
+                armor_point_pub->publish(msg);
+            }
         }
 
         auto targets = tracker.track(armors, t);
