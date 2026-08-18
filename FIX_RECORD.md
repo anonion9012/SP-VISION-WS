@@ -2,7 +2,47 @@
 
 ## <div align = "center">M4</div>
 
+### 实现
 
+---
+
+### 修改
+
+---
+
+### 所遇问题与解决方案
+
+#### 问题一：`standard_ros2` 运行后 tracker 始终处于 `lost`
+
+`Tracker` 初始状态为 `lost`，只有检测到装甲板后才会进入 `detecting`，并在连续满足 `min_detect_count` 次检测后进入 `tracking`。如果 detector 返回的装甲板列表为空，`set_target()` 会持续返回 `false`，状态就会一直保持为 `lost`。
+
+解决方案：排查 tracker 前先确认 detector 的输出数量、装甲板颜色、名称和类型，重点检查识别结果是否在进入 tracker 前已经为空。
+
+#### 问题二：ROS2 图像回调同步等待 IMU，可能导致 tracker 被强制重置
+
+`standard_ros.cpp` 在每次图像回调中同步调用 `ROSIMU::try_imu_at()`。该函数需要等待时间戳晚于当前图像的下一帧 IMU，超时时间为 100 ms。发生超时后虽然继续使用上一帧姿态，但图像处理节奏会产生阻塞和抖动。
+
+同时，`tracker.cpp` 将两帧之间的时间间隔大于 100 ms 视为相机离线，并直接将状态设置为 `lost`，因此 IMU 等待或图像处理卡顿可能导致 tracker 反复丢失目标。
+
+解决方案：避免在图像主回调中阻塞等待 IMU，使用最近一次有效姿态或独立线程完成姿态缓存；同时记录图像帧间隔和 IMU 超时次数，区分真实丢帧与同步等待造成的延迟。
+
+#### 问题三：OpenVINO GPU 不可用时回退 CPU，可能造成推理帧间隔过大
+
+配置文件中的 `device` 设置为 `GPU`，但当前环境没有可用的 OpenVINO GPU 设备，模型编译失败后回退到 CPU。CPU 推理耗时增加后，可能使图像回调间隔超过 tracker 的 100 ms 阈值，从而触发 `Large dt` 保护并进入 `lost`。
+
+解决方案：运行时确认 OpenVINO 的 GPU 驱动和设备是否可用；如果使用 CPU，降低输入或模型推理负载，并在 tracker 中记录实际 `dt`，避免仅凭固定阈值误判相机离线。
+
+#### 问题四：敌方颜色过滤可能清空 detector 输出
+
+`tracker.cpp` 会根据配置中的 `enemy_color` 删除其他颜色的装甲板。当前 `standard3.yaml` 配置为 `enemy_color: "red"`；如果模型将目标识别为蓝色，或实际使用的机器人配置与该颜色不一致，所有检测结果都会在 tracker 中被过滤，最终表现为始终 `lost`。
+
+解决方案：确认配置文件中的 `enemy_color` 与实际敌方颜色一致，并在 tracker 过滤前后分别输出装甲板数量和颜色，确认是否因为颜色过滤导致列表为空。
+
+#### 问题五：ROS2 `config_path` 参数读取顺序错误
+
+`standard_ros.cpp` 在构造函数体中才调用 `set_params()` 读取 ROS2 参数，但 detector、solver、tracker、aimer 和 shooter 都是在构造函数体执行前完成初始化的。因此通过 `--ros-args -p config_path:=...` 传入的配置路径不会被这些算法对象使用，它们仍然使用默认的 `standard3.yaml`。
+
+解决方案：在构造所有依赖配置的算法对象之前完成参数解析，或将算法对象改为在参数读取之后显式构造，确保命令行指定的配置文件真正生效。
 
 ## <div align = "center">M3</div>
 

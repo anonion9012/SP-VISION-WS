@@ -3,9 +3,11 @@
 #include <math.h>
 
 #include <Eigen/Geometry>
+#include <atomic>
 #include <array>
 #include <optional>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
@@ -24,6 +26,8 @@ namespace io {
             std::chrono::steady_clock::time_point timestamp,
             std::chrono::milliseconds timeout);
 
+        std::uint64_t imu_count() const;
+
     private:
         struct IMUData
         {
@@ -38,5 +42,6 @@ namespace io {
         tools::ThreadSafeQueue<IMUData> queue_;
         IMUData data_ahead_, data_behind_;
         bool has_initial_data_{false};
+        std::atomic<std::uint64_t> imu_count_{0};
     };
 }

@@ -98,6 +98,7 @@ struct Armor
   double confidence;
   bool duplicated;
 
+  cv::Mat rvec, tvec;
   Eigen::Vector3d xyz_in_gimbal;  // 单位：m
   Eigen::Vector3d xyz_in_world;   // 单位：m
   Eigen::Vector3d ypr_in_gimbal;  // 单位：rad

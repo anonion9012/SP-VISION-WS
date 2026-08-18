@@ -21,6 +21,12 @@ namespace io {
         Eigen::Quaterniond q{msg->w, msg->x, msg->y, msg->z};
         q.normalize();
         queue_.push({q, timestamp});
+        const auto count = imu_count_.load(std::memory_order_relaxed);
+        imu_count_.store(count == 1000 ? 1 : count + 1, std::memory_order_relaxed);
+    }
+
+    std::uint64_t ROSIMU::imu_count() const {
+        return imu_count_.load(std::memory_order_relaxed);
     }
 
     std::optional<Eigen::Quaterniond> ROSIMU::try_imu_at(

@@ -4,6 +4,7 @@
 #include <print>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <thread>
 
@@ -16,6 +17,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "autoaim_msgs/msg/orienta.hpp"
+#include "std_msgs/msg/u_int64.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
 
 // sp_vision
 #include "io/cboard.hpp"
@@ -66,6 +70,9 @@ class AutoAim : public rclcpp::Node {
             }
         );
         armor_img_pub = this->create_publisher<sensor_msgs::msg::Image>("debug/armor_img", 10);
+        tracker_state_pub = this->create_publisher<std_msgs::msg::String>("debug/tracker_state", 10);
+        imu_count_pub = this->create_publisher<std_msgs::msg::UInt64>("debug/imu_count", 10);
+        image_count_pub = this->create_publisher<std_msgs::msg::UInt64>("debug/image_count", 10);
         try{
             imu_thread = std::thread([this]() { rclcpp::spin(imu); });
         } catch (const std::exception & e) {
@@ -94,8 +101,25 @@ class AutoAim : public rclcpp::Node {
     // @msg 接收图像信息
     // Orienta 消息没有时间戳，IMU 也使用接收时的 steady_clock，因此图像使用当前本机时间。
     void callback(sensor_msgs::msg::Image::ConstSharedPtr msg) {
+        image_count_ = image_count_ == 1000 ? 1 : image_count_ + 1;
+        std_msgs::msg::UInt64 imu_count_msg{};
+        imu_count_msg.data = imu->imu_count();
+        imu_count_pub->publish(imu_count_msg);
+        std_msgs::msg::UInt64 image_count_msg{};
+        image_count_msg.data = image_count_;
+        image_count_pub->publish(image_count_msg);
+
         cv::Mat img{cv_bridge::toCvShare(msg, "bgr8")->image};
-        const auto t = std::chrono::steady_clock::now();
+        const auto stamp_ns =
+            static_cast<int64_t>(msg->header.stamp.sec) * 1'000'000'000LL +
+            static_cast<int64_t>(msg->header.stamp.nanosec);
+        if (!fst_frame_initialized_) {
+            fst_frame_time = std::chrono::steady_clock::now();
+            fst_frame_stamp = std::chrono::nanoseconds(stamp_ns);
+            fst_frame_initialized_ = true;
+        }
+        
+        const auto t = fst_frame_time + (std::chrono::nanoseconds(stamp_ns) - fst_frame_stamp);
         const auto imu_q = imu->try_imu_at(t, std::chrono::milliseconds(100));
         if (!imu_q) {
             std::println("[WARN] IMU data timeout, using the last valid orientation.");
@@ -103,7 +127,7 @@ class AutoAim : public rclcpp::Node {
             last_imu = *imu_q;
         }
         const auto & q = last_imu;
-        std::println(">>>>>{} : {},{},{},{}", t.time_since_epoch().count(), q.w(), q.x(), q.y(), q.z());
+        // std::println(">>>>>{} : {},{},{},{}", t.time_since_epoch().count(), q.w(), q.x(), q.y(), q.z());
 
         const auto mode = cboard.mode;
         
@@ -116,7 +140,15 @@ class AutoAim : public rclcpp::Node {
         solver.set_R_gimbal2world(q);
 
         auto armors = detector.detect(img);
-        for (const auto& armor : armors) {
+
+        auto targets = tracker.track(armors, t);
+
+        std_msgs::msg::String tracker_state{};
+        tracker_state.data = tracker.state();
+        tracker_state_pub->publish(tracker_state);
+
+        for (const auto& armor : armors)
+        {
             if (armor.points.empty()) {
                 continue;
             }
@@ -128,16 +160,17 @@ class AutoAim : public rclcpp::Node {
                 tools::draw_text(img, auto_aim::ARMOR_NAMES[name_index], armor.points[0],
                                  {255, 255, 255}, 2);
             }
+
+            cv::drawFrameAxes(img, solver.camera_matrix(), solver.distort_coeffs(), armor.rvec, armor.tvec, 1);
         }
 
         // Debug output is optional and published once per input frame. A
         // missing debug viewer does not affect the main auto-aim pipeline.
-        if (armor_img_pub) {
+        if (armor_img_pub)
+        {
             const auto debug_image = cv_bridge::CvImage(msg->header, "bgr8", img).toImageMsg();
             armor_img_pub->publish(*debug_image);
         }
-
-        auto targets = tracker.track(armors, t);
 
         auto command = aimer.aim(targets, t, cboard.bullet_speed);
 
@@ -149,6 +182,10 @@ class AutoAim : public rclcpp::Node {
         config_path = this->get_parameter("config_path").as_string();
 
     }
+
+    std::chrono::steady_clock::time_point fst_frame_time;
+    std::chrono::nanoseconds fst_frame_stamp;
+    bool fst_frame_initialized_{false};
 
     std::string config_path{default_config_path()};
 
@@ -171,6 +208,10 @@ class AutoAim : public rclcpp::Node {
 
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr armor_img_pub;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tracker_state_pub;
+    rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr imu_count_pub;
+    rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr image_count_pub;
+    std::uint64_t image_count_{0};
 
 };
 
