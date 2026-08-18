@@ -19,7 +19,7 @@
 namespace io {
     class ROSIMU : public rclcpp::Node {
         public:
-        ROSIMU();
+        explicit ROSIMU(bool force_match = false);
         ~ROSIMU();
 
         std::optional<Eigen::Quaterniond> try_imu_at(
@@ -42,6 +42,7 @@ namespace io {
         tools::ThreadSafeQueue<IMUData> queue_;
         IMUData data_ahead_, data_behind_;
         bool has_initial_data_{false};
+        bool force_match_{false};
         std::atomic<std::uint64_t> imu_count_{0};
     };
 }

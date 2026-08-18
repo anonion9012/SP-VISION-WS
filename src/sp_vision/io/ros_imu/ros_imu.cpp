@@ -3,7 +3,7 @@
 #include "tools/logger.hpp"
 
 namespace io {
-    ROSIMU::ROSIMU() : Node("ros_imu"), queue_(5000) {
+    ROSIMU::ROSIMU(bool force_match) : Node("ros_imu"), queue_(5000), force_match_(force_match) {
         orienta_sub_ = this->create_subscription<autoaim_msgs::msg::Orienta>(
             "imu/quaternion",
             10,
@@ -32,6 +32,13 @@ namespace io {
     std::optional<Eigen::Quaterniond> ROSIMU::try_imu_at(
         std::chrono::steady_clock::time_point timestamp,
         std::chrono::milliseconds timeout) {
+        if (force_match_) {
+            if (!queue_.pop_for(data_behind_, timeout)) {
+                return std::nullopt;
+            }
+            return data_behind_.q.normalized();
+        }
+
         if (!has_initial_data_) {
             if (!queue_.pop_for(data_ahead_, timeout) ||
                 !queue_.pop_for(data_behind_, timeout)) {

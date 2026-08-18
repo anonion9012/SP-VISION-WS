@@ -34,6 +34,7 @@
 #include "tools/img_tools.hpp"
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
+#include "tools/yaml.hpp"
 #include "tools/plotter.hpp"
 #include "tools/recorder.hpp"
 
@@ -43,6 +44,12 @@ std::string default_config_path()
 {
     return ament_index_cpp::get_package_share_directory("sp_vision") + "/configs/standard3.yaml";
 }
+
+bool load_force_match(const std::string & config_path)
+{
+    const auto yaml = tools::load(config_path);
+    return yaml["ros_imu_force_match"] ? yaml["ros_imu_force_match"].as<bool>() : false;
+}
 }
 
 //自瞄节点
@@ -50,7 +57,7 @@ class AutoAim : public rclcpp::Node {
     public:
     AutoAim()
         : Node("auto_aim"),
-          imu(std::make_shared<io::ROSIMU>()),
+          imu(std::make_shared<io::ROSIMU>(ros_imu_force_match)),
           cboard(
               config_path,
               [this](std::chrono::steady_clock::time_point timestamp) {
@@ -147,8 +154,14 @@ class AutoAim : public rclcpp::Node {
         tracker_state.data = tracker.state();
         tracker_state_pub->publish(tracker_state);
 
-        for (const auto& armor : armors)
+        // 使用迭代器同时遍历
+        auto armor_it = armors.begin();
+        auto target_it = targets.begin();
+        for (; armor_it != armors.end() && target_it != targets.end(); ++armor_it, ++target_it)
         {
+            const auto &armor = *armor_it;
+            const auto &target = *target_it;
+
             if (armor.points.empty()) {
                 continue;
             }
@@ -162,6 +175,21 @@ class AutoAim : public rclcpp::Node {
             }
 
             cv::drawFrameAxes(img, solver.camera_matrix(), solver.distort_coeffs(), armor.rvec, armor.tvec, 1);
+
+            const auto target_x = target.ekf_x();
+            constexpr float velocity_arrow_dt = 0.01F;
+            const cv::Point3f world_pt(
+                static_cast<float>(armor.xyz_in_world.x()), static_cast<float>(armor.xyz_in_world.y()),
+                static_cast<float>(armor.xyz_in_world.z()));
+            const cv::Point3f velocity_pt(
+                world_pt.x + static_cast<float>(target_x[1]) * velocity_arrow_dt,
+                world_pt.y + static_cast<float>(target_x[3]) * velocity_arrow_dt,
+                world_pt.z + static_cast<float>(target_x[5]) * velocity_arrow_dt);
+            auto pixel_points = solver.world2pixel({world_pt, velocity_pt});
+            if (pixel_points.size() == 2)
+            {
+                cv::arrowedLine(img, armor.center, armor.center + pixel_points[1], {255, 255, 255}, 2);
+            }
         }
 
         // Debug output is optional and published once per input frame. A
@@ -188,6 +216,7 @@ class AutoAim : public rclcpp::Node {
     bool fst_frame_initialized_{false};
 
     std::string config_path{default_config_path()};
+    bool ros_imu_force_match{load_force_match(config_path)};
 
     tools::Exiter exiter;
     tools::Plotter plotter;
