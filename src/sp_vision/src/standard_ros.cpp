@@ -34,6 +34,7 @@
 #include "tools/img_tools.hpp"
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
+#include "tools/yaml.hpp"
 #include "tools/plotter.hpp"
 #include "tools/recorder.hpp"
 
@@ -43,6 +44,12 @@ std::string default_config_path()
 {
     return ament_index_cpp::get_package_share_directory("sp_vision") + "/configs/standard3.yaml";
 }
+
+bool load_force_match(const std::string & config_path)
+{
+    const auto yaml = tools::load(config_path);
+    return yaml["ros_imu_force_match"] ? yaml["ros_imu_force_match"].as<bool>() : false;
+}
 }
 
 //自瞄节点
@@ -50,7 +57,7 @@ class AutoAim : public rclcpp::Node {
     public:
     AutoAim()
         : Node("auto_aim"),
-          imu(std::make_shared<io::ROSIMU>()),
+          imu(std::make_shared<io::ROSIMU>(ros_imu_force_match)),
           cboard(
               config_path,
               [this](std::chrono::steady_clock::time_point timestamp) {
@@ -188,6 +195,7 @@ class AutoAim : public rclcpp::Node {
     bool fst_frame_initialized_{false};
 
     std::string config_path{default_config_path()};
+    bool ros_imu_force_match{load_force_match(config_path)};
 
     tools::Exiter exiter;
     tools::Plotter plotter;

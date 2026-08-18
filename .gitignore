@@ -17,3 +17,5 @@ ws_review/
 .brooks*
 # colcon config
 colcon_defaults.yaml
+# others
+symlink_install_manifest.txt
