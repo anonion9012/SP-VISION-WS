@@ -21,8 +21,6 @@ namespace io {
         Eigen::Quaterniond q{msg->w, msg->x, msg->y, msg->z};
         q.normalize();
         queue_.push({q, timestamp});
-        const auto count = imu_count_.load(std::memory_order_relaxed);
-        imu_count_.store(count == 1000 ? 1 : count + 1, std::memory_order_relaxed);
     }
 
     std::uint64_t ROSIMU::imu_count() const {
@@ -32,18 +30,28 @@ namespace io {
     std::optional<Eigen::Quaterniond> ROSIMU::try_imu_at(
         std::chrono::steady_clock::time_point timestamp,
         std::chrono::milliseconds timeout) {
+        const auto count_consumed = [this] {
+            const auto count = imu_count_.load(std::memory_order_relaxed);
+            imu_count_.store(count == 1000 ? 1 : count + 1, std::memory_order_relaxed);
+        };
+
         if (force_match_) {
             if (!queue_.pop_for(data_behind_, timeout)) {
                 return std::nullopt;
             }
+            count_consumed();
             return data_behind_.q.normalized();
         }
 
         if (!has_initial_data_) {
-            if (!queue_.pop_for(data_ahead_, timeout) ||
-                !queue_.pop_for(data_behind_, timeout)) {
+            if (!queue_.pop_for(data_ahead_, timeout)) {
                 return std::nullopt;
             }
+            count_consumed();
+            if (!queue_.pop_for(data_behind_, timeout)) {
+                return std::nullopt;
+            }
+            count_consumed();
             has_initial_data_ = true;
         }
 
@@ -55,6 +63,7 @@ namespace io {
             if (!queue_.pop_for(data_behind_, timeout)) {
                 return std::nullopt;
             }
+            count_consumed();
             if (data_behind_.timestamp > timestamp)
                 break;
             data_ahead_ = data_behind_;
