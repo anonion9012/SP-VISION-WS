@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -412,8 +413,41 @@ private:
     std::vector<std::vector<std::string>> values;
   };
 
+  static std::optional<std::size_t> timestampIndex(
+    const std::map<std::int64_t, std::size_t> & timestamp_indices,
+    std::int64_t timestamp_ns,
+    std::int64_t tolerance_ns)
+  {
+    auto best_iter = timestamp_indices.end();
+    auto best_delta = std::numeric_limits<std::int64_t>::max();
+    const auto consider = [&](auto candidate) {
+      if (candidate == timestamp_indices.end()) {
+        return;
+      }
+
+      const auto delta = candidate->first >= timestamp_ns ?
+        candidate->first - timestamp_ns : timestamp_ns - candidate->first;
+      if (delta < best_delta) {
+        best_iter = candidate;
+        best_delta = delta;
+      }
+    };
+
+    const auto lower = timestamp_indices.lower_bound(timestamp_ns);
+    consider(lower);
+    if (lower != timestamp_indices.begin()) {
+      consider(std::prev(lower));
+    }
+
+    if (best_iter == timestamp_indices.end() || best_delta > tolerance_ns) {
+      return std::nullopt;
+    }
+    return best_iter->second;
+  }
+
   static DisplayTable makeTable(const std::vector<DisplayItem> & items)
   {
+    constexpr std::int64_t timestamp_tolerance_ns = 100'000;
     DisplayTable table;
     std::map<std::string, std::size_t> row_indices;
     std::map<std::int64_t, std::size_t> timestamp_indices;
@@ -430,7 +464,7 @@ private:
       }
 
       const auto timestamp_ns = item.timestamp.nanoseconds();
-      if (timestamp_indices.find(timestamp_ns) == timestamp_indices.end()) {
+      if (!timestampIndex(timestamp_indices, timestamp_ns, timestamp_tolerance_ns).has_value()) {
         timestamp_indices.emplace(timestamp_ns, table.timestamps.size());
         table.timestamps.push_back(item.timestamp);
       }
@@ -459,12 +493,13 @@ private:
 
       const auto row_name = item.topic_name.empty() ? kindText(item.kind) : item.topic_name;
       const auto row_iter = row_indices.find(row_name);
-      const auto timestamp_iter = timestamp_indices.find(item.timestamp.nanoseconds());
-      if (row_iter == row_indices.end() || timestamp_iter == timestamp_indices.end()) {
+      const auto timestamp_index = timestampIndex(
+        timestamp_indices, item.timestamp.nanoseconds(), timestamp_tolerance_ns);
+      if (row_iter == row_indices.end() || !timestamp_index.has_value()) {
         continue;
       }
 
-      auto & value = table.values[row_iter->second][timestamp_iter->second];
+      auto & value = table.values[row_iter->second][*timestamp_index];
       if (!value.empty()) {
         value += "; ";
       }
