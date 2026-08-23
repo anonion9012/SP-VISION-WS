@@ -43,6 +43,7 @@ namespace io {
         IMUData data_ahead_, data_behind_;
         bool has_initial_data_{false};
         bool force_match_{false};
-        std::atomic<std::uint64_t> imu_count_{0};
+        // 消费计数用于确认 bag 的逐帧顺序配对，不再循环到 1000。
+        std::atomic<std::uint64_t> consumed_count_{0};
     };
 }

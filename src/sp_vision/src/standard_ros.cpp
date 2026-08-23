@@ -59,6 +59,8 @@ class AutoAim : public rclcpp::Node {
     public:
     AutoAim()
         : Node("auto_aim"),
+          config_path(declare_parameter<std::string>("config_path", default_config_path())),
+          ros_imu_force_match(load_force_match(config_path)),
           imu(std::make_shared<io::ROSIMU>(ros_imu_force_match)),
           cboard(
               config_path,
@@ -67,7 +69,6 @@ class AutoAim : public rclcpp::Node {
                       .value_or(Eigen::Quaterniond::Identity());
               })
     {
-        set_params();
         std::println(">>>>>AutoAim node started<<<<<");
         std::println("config_path: {}", config_path);
         tools::logger()->info("config_path: {}", config_path);
@@ -109,16 +110,14 @@ class AutoAim : public rclcpp::Node {
     bool exit_requested() const { return exiter.exit(); }
 
     private:
+    // Must precede cboard/detector/solver declarations: C++ initializes members
+    // in declaration order, not initializer-list order.
+    std::string config_path;
+    bool ros_imu_force_match{false};
+
     // @msg 接收图像信息
-    // Orienta 消息没有时间戳，IMU 也使用接收时的 steady_clock，因此图像使用当前本机时间。
     void callback(sensor_msgs::msg::Image::ConstSharedPtr msg) {
-        image_count_ = image_count_ == 1000 ? 1 : image_count_ + 1;
-        std_msgs::msg::UInt64 imu_count_msg{};
-        imu_count_msg.data = imu->imu_count();
-        imu_count_pub->publish(imu_count_msg);
-        std_msgs::msg::UInt64 image_count_msg{};
-        image_count_msg.data = image_count_;
-        image_count_pub->publish(image_count_msg);
+        ++image_count_;
 
         cv::Mat img{cv_bridge::toCvShare(msg, "bgr8")->image};
         const auto stamp_ns =
@@ -131,16 +130,28 @@ class AutoAim : public rclcpp::Node {
         }
         
         const auto t = fst_frame_time + (std::chrono::nanoseconds(stamp_ns) - fst_frame_stamp);
-        // 强制匹配仍按消息顺序取姿态；非强制模式使用本机接收时间，避免与 bag 时间轴混用。
-        const auto imu_query_time = ros_imu_force_match ? t : std::chrono::steady_clock::now();
+        // Orienta 没有时间戳，bag 契约保证图像和姿态同帧同序。
+        // 强制模式按序取姿态；非强制模式才按本机接收时间插值。
+        const auto imu_query_time =
+            ros_imu_force_match ? t : std::chrono::steady_clock::now();
         const auto imu_q = imu->try_imu_at(imu_query_time, std::chrono::milliseconds(100));
         if (!imu_q) {
-            std::println("[WARN] IMU data timeout, using the last valid orientation.");
-        } else {
-            last_imu = *imu_q;
+            static auto last_timeout_log = std::chrono::steady_clock::time_point::min();
+            const auto now = std::chrono::steady_clock::now();
+            if (tools::delta_time(now, last_timeout_log) >= 1.0) {
+                std::println("[WARN] IMU data timeout, dropping unpaired image.");
+                last_timeout_log = now;
+            }
+            return;
         }
-        const auto & q = last_imu;
-        // std::println(">>>>>{} : {},{},{},{}", t.time_since_epoch().count(), q.w(), q.x(), q.y(), q.z());
+        const auto & q = *imu_q;
+
+        std_msgs::msg::UInt64 imu_count_msg{};
+        imu_count_msg.data = imu->imu_count();
+        imu_count_pub->publish(imu_count_msg);
+        std_msgs::msg::UInt64 image_count_msg{};
+        image_count_msg.data = image_count_;
+        image_count_pub->publish(image_count_msg);
 
         const auto mode = cboard.mode;
         
@@ -152,13 +163,11 @@ class AutoAim : public rclcpp::Node {
 
         solver.set_R_gimbal2world(q);
 
-        Eigen::Vector3d ypr = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
-
         auto armors = detector.detect(img);
 
         auto solved_armors = armors;
-        if (!armors.empty()) {
-            solver.solve(*solved_armors.begin());
+        for (auto & armor : solved_armors) {
+            solver.solve(armor);
         }
 
         auto targets = tracker.track(armors, t);
@@ -185,7 +194,7 @@ class AutoAim : public rclcpp::Node {
 
             geometry_msgs::msg::PointStamped armor_point{};
             armor_point.header.stamp = msg->header.stamp;
-            armor_point.header.frame_id = auto_aim::ARMOR_NAMES[name_index];
+            armor_point.header.frame_id = "world";
             armor_point.point.set__x(armor.xyz_in_world.x());
             armor_point.point.set__y(armor.xyz_in_world.y());
             armor_point.point.set__z(armor.xyz_in_world.z());
@@ -206,17 +215,16 @@ class AutoAim : public rclcpp::Node {
             const auto target_x = target.ekf_x();
             geometry_msgs::msg::PointStamped target_point{};
             target_point.header.stamp = msg->header.stamp;
-            target_point.header.frame_id = "target";
+            target_point.header.frame_id = "world";
             target_point.point.set__x(target_x[0]);
             target_point.point.set__y(target_x[2]);
             target_point.point.set__z(target_x[4]);
             target_point_pub->publish(target_point);
-            std::println("[INFO][Target][ekf_x] world_point: {}, {}, {}", target_x[0], target_x[2], target_x[4]);
         }
 
         // Debug output is optional and published once per input frame. A
         // missing debug viewer does not affect the main auto-aim pipeline.
-        if (armor_img_pub)
+        if (armor_img_pub && armor_img_pub->get_subscription_count() > 0)
         {
             const auto debug_image = cv_bridge::CvImage(msg->header, "bgr8", img).toImageMsg();
             armor_img_pub->publish(*debug_image);
@@ -227,18 +235,9 @@ class AutoAim : public rclcpp::Node {
         cboard.send(command);
     }
 
-    void set_params() {
-        this->declare_parameter<std::string>("config_path", config_path);
-        config_path = this->get_parameter("config_path").as_string();
-
-    }
-
     std::chrono::steady_clock::time_point fst_frame_time;
     std::chrono::nanoseconds fst_frame_stamp;
     bool fst_frame_initialized_{false};
-
-    std::string config_path{default_config_path()};
-    bool ros_imu_force_match{load_force_match(config_path)};
 
     tools::Exiter exiter;
     tools::Plotter plotter;
@@ -255,8 +254,6 @@ class AutoAim : public rclcpp::Node {
     auto_aim::Shooter shooter{config_path};
 
     io::Mode last_mode{io::Mode::idle};
-    Eigen::Quaterniond last_imu{Eigen::Quaterniond::Identity()};
-
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr armor_img_pub;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tracker_state_pub;

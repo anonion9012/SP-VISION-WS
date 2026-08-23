@@ -24,18 +24,19 @@ namespace io {
     }
 
     std::uint64_t ROSIMU::imu_count() const {
-        return imu_count_.load(std::memory_order_relaxed);
+        return consumed_count_.load(std::memory_order_relaxed);
     }
 
     std::optional<Eigen::Quaterniond> ROSIMU::try_imu_at(
         std::chrono::steady_clock::time_point timestamp,
         std::chrono::milliseconds timeout) {
         const auto count_consumed = [this] {
-            const auto count = imu_count_.load(std::memory_order_relaxed);
-            imu_count_.store(count == 1000 ? 1 : count + 1, std::memory_order_relaxed);
+            consumed_count_.fetch_add(1, std::memory_order_relaxed);
         };
 
         if (force_match_) {
+            // Orienta 没有 header.stamp。bag 契约保证图像和姿态同帧同序，
+            // 因此这里按消费序号配对，不能用本机接收时间插值。
             if (!queue_.pop_for(data_behind_, timeout)) {
                 return std::nullopt;
             }
