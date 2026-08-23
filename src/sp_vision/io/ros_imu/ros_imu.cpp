@@ -6,7 +6,7 @@ namespace io {
     ROSIMU::ROSIMU(bool force_match) : Node("ros_imu"), queue_(5000), force_match_(force_match) {
         orienta_sub_ = this->create_subscription<autoaim_msgs::msg::Orienta>(
             "imu/quaternion",
-            10,
+            rclcpp::QoS(rclcpp::KeepLast(2000)).reliable().durability_volatile(),
             [this](autoaim_msgs::msg::Orienta::ConstSharedPtr msg)
             {
                 this->callback(msg);

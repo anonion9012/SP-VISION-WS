@@ -40,6 +40,8 @@
 
 namespace
 {
+constexpr std::size_t ROS_QUEUE_DEPTH = 2000;
+
 std::string default_config_path()
 {
     return ament_index_cpp::get_package_share_directory("sp_vision") + "/configs/standard3.yaml";
@@ -71,7 +73,7 @@ class AutoAim : public rclcpp::Node {
         tools::logger()->info("config_path: {}", config_path);
         image_sub = this->create_subscription<sensor_msgs::msg::Image>(
             "image_raw", 
-            10,
+            rclcpp::QoS(rclcpp::KeepLast(ROS_QUEUE_DEPTH)).reliable().durability_volatile(),
             [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {
                 this->callback(msg);
             }
@@ -80,6 +82,8 @@ class AutoAim : public rclcpp::Node {
         tracker_state_pub = this->create_publisher<std_msgs::msg::String>("debug/tracker_state", 10);
         imu_count_pub = this->create_publisher<std_msgs::msg::UInt64>("debug/imu_count", 10);
         image_count_pub = this->create_publisher<std_msgs::msg::UInt64>("debug/image_count", 10);
+        armor_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("debug/armor_point", 10);
+        target_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("debug/target_point", 10);
         try{
             imu_thread = std::thread([this]() { rclcpp::spin(imu); });
         } catch (const std::exception & e) {
@@ -127,7 +131,9 @@ class AutoAim : public rclcpp::Node {
         }
         
         const auto t = fst_frame_time + (std::chrono::nanoseconds(stamp_ns) - fst_frame_stamp);
-        const auto imu_q = imu->try_imu_at(t, std::chrono::milliseconds(100));
+        // 强制匹配仍按消息顺序取姿态；非强制模式使用本机接收时间，避免与 bag 时间轴混用。
+        const auto imu_query_time = ros_imu_force_match ? t : std::chrono::steady_clock::now();
+        const auto imu_q = imu->try_imu_at(imu_query_time, std::chrono::milliseconds(100));
         if (!imu_q) {
             std::println("[WARN] IMU data timeout, using the last valid orientation.");
         } else {
@@ -146,7 +152,14 @@ class AutoAim : public rclcpp::Node {
 
         solver.set_R_gimbal2world(q);
 
+        Eigen::Vector3d ypr = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
+
         auto armors = detector.detect(img);
+
+        auto solved_armors = armors;
+        if (!armors.empty()) {
+            solver.solve(*solved_armors.begin());
+        }
 
         auto targets = tracker.track(armors, t);
 
@@ -154,42 +167,51 @@ class AutoAim : public rclcpp::Node {
         tracker_state.data = tracker.state();
         tracker_state_pub->publish(tracker_state);
 
-        // 使用迭代器同时遍历
-        auto armor_it = armors.begin();
+        // 使用迭代器遍历
+        auto armor_it = solved_armors.begin();
         auto target_it = targets.begin();
-        for (; armor_it != armors.end() && target_it != targets.end(); ++armor_it, ++target_it)
+        for (; armor_it != solved_armors.end(); ++armor_it)
         {
             const auto &armor = *armor_it;
-            const auto &target = *target_it;
 
             if (armor.points.empty()) {
                 continue;
             }
 
+            // armor_points
+            const auto name_index = static_cast<std::size_t>(armor.name);
+
             tools::draw_points(img, armor.points);
 
-            const auto name_index = static_cast<std::size_t>(armor.name);
+            geometry_msgs::msg::PointStamped armor_point{};
+            armor_point.header.stamp = msg->header.stamp;
+            armor_point.header.frame_id = auto_aim::ARMOR_NAMES[name_index];
+            armor_point.point.set__x(armor.xyz_in_world.x());
+            armor_point.point.set__y(armor.xyz_in_world.y());
+            armor_point.point.set__z(armor.xyz_in_world.z());
+            armor_point_pub->publish(armor_point);
+
             if (name_index < auto_aim::ARMOR_NAMES.size()) {
-                tools::draw_text(img, auto_aim::ARMOR_NAMES[name_index], armor.points[0],
-                                 {255, 255, 255}, 2);
+                tools::draw_text(img, auto_aim::ARMOR_NAMES[name_index], armor.points[0], {255, 255, 255}, 2);
             }
 
             cv::drawFrameAxes(img, solver.camera_matrix(), solver.distort_coeffs(), armor.rvec, armor.tvec, 1);
 
+        }
+
+        for (; target_it != targets.end(); ++target_it)
+        {
+            // target
+            const auto &target = *target_it;
             const auto target_x = target.ekf_x();
-            constexpr float velocity_arrow_dt = 0.01F;
-            const cv::Point3f world_pt(
-                static_cast<float>(armor.xyz_in_world.x()), static_cast<float>(armor.xyz_in_world.y()),
-                static_cast<float>(armor.xyz_in_world.z()));
-            const cv::Point3f velocity_pt(
-                world_pt.x + static_cast<float>(target_x[1]) * velocity_arrow_dt,
-                world_pt.y + static_cast<float>(target_x[3]) * velocity_arrow_dt,
-                world_pt.z + static_cast<float>(target_x[5]) * velocity_arrow_dt);
-            auto pixel_points = solver.world2pixel({world_pt, velocity_pt});
-            if (pixel_points.size() == 2)
-            {
-                cv::arrowedLine(img, armor.center, armor.center + pixel_points[1], {255, 255, 255}, 2);
-            }
+            geometry_msgs::msg::PointStamped target_point{};
+            target_point.header.stamp = msg->header.stamp;
+            target_point.header.frame_id = "target";
+            target_point.point.set__x(target_x[0]);
+            target_point.point.set__y(target_x[2]);
+            target_point.point.set__z(target_x[4]);
+            target_point_pub->publish(target_point);
+            std::println("[INFO][Target][ekf_x] world_point: {}, {}, {}", target_x[0], target_x[2], target_x[4]);
         }
 
         // Debug output is optional and published once per input frame. A
@@ -238,6 +260,8 @@ class AutoAim : public rclcpp::Node {
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr armor_img_pub;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tracker_state_pub;
+    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr armor_point_pub;
+    rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_pub;
     rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr imu_count_pub;
     rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr image_count_pub;
     std::uint64_t image_count_{0};

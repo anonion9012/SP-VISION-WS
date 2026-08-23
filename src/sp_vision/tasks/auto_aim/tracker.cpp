@@ -24,6 +24,8 @@ Tracker::Tracker(const std::string & config_path, Solver & solver)
   max_temp_lost_count_ = yaml["max_temp_lost_count"].as<int>();
   outpost_max_temp_lost_count_ = yaml["outpost_max_temp_lost_count"].as<int>();
   normal_temp_lost_count_ = max_temp_lost_count_;
+  image_width_ = yaml["image_width"] ? yaml["image_width"].as<int>() : 1440;
+  image_height_ = yaml["image_height"] ? yaml["image_height"].as<int>() : 1080;
 }
 
 std::string Tracker::state() const { return state_; }
@@ -50,8 +52,8 @@ std::list<Target> Tracker::track(
   // });
 
   // 优先选择靠近图像中心的装甲板
-  armors.sort([](const Armor & a, const Armor & b) {
-    cv::Point2f img_center(1440 / 2, 1080 / 2);  // TODO
+  armors.sort([this](const Armor & a, const Armor & b) {
+    cv::Point2f img_center(image_width_ / 2.0F, image_height_ / 2.0F);
     auto distance_1 = cv::norm(a.center - img_center);
     auto distance_2 = cv::norm(b.center - img_center);
     return distance_1 < distance_2;
@@ -115,8 +117,8 @@ std::tuple<omniperception::DetectionResult, std::list<Target>> Tracker::track(
   }
 
   // 优先选择靠近图像中心的装甲板
-  armors.sort([](const Armor & a, const Armor & b) {
-    cv::Point2f img_center(1440 / 2, 1080 / 2);  // TODO
+  armors.sort([this](const Armor & a, const Armor & b) {
+    cv::Point2f img_center(image_width_ / 2.0F, image_height_ / 2.0F);
     auto distance_1 = cv::norm(a.center - img_center);
     auto distance_2 = cv::norm(b.center - img_center);
     return distance_1 < distance_2;
