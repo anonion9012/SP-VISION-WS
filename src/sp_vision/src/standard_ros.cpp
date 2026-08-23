@@ -20,6 +20,7 @@
 #include "std_msgs/msg/u_int64.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
+#include "geometry_msgs/msg/vector3_stamped.hpp"
 
 // sp_vision
 #include "io/cboard.hpp"
@@ -52,6 +53,15 @@ bool load_force_match(const std::string & config_path)
     const auto yaml = tools::load(config_path);
     return yaml["ros_imu_force_match"] ? yaml["ros_imu_force_match"].as<bool>() : false;
 }
+
+int tracker_state_code(const std::string & state)
+{
+    if (state == "detecting") return 1;
+    if (state == "tracking") return 2;
+    if (state == "temp_lost") return 3;
+    if (state == "switching") return 4;
+    return 0;
+}
 }
 
 //自瞄节点
@@ -81,6 +91,9 @@ class AutoAim : public rclcpp::Node {
         );
         armor_img_pub = this->create_publisher<sensor_msgs::msg::Image>("debug/armor_img", 10);
         tracker_state_pub = this->create_publisher<std_msgs::msg::String>("debug/tracker_state", 10);
+        tracker_state_code_pub = this->create_publisher<geometry_msgs::msg::Vector3Stamped>("debug/tracker_state_code", 10);
+        gimbal_yaw_pub = this->create_publisher<geometry_msgs::msg::Vector3Stamped>("debug/gimbal_yaw", 10);
+        target_yaw_pub = this->create_publisher<geometry_msgs::msg::Vector3Stamped>("debug/target_yaw", 10);
         imu_count_pub = this->create_publisher<std_msgs::msg::UInt64>("debug/imu_count", 10);
         image_count_pub = this->create_publisher<std_msgs::msg::UInt64>("debug/image_count", 10);
         armor_point_pub = this->create_publisher<geometry_msgs::msg::PointStamped>("debug/armor_point", 10);
@@ -162,6 +175,15 @@ class AutoAim : public rclcpp::Node {
         }
 
         solver.set_R_gimbal2world(q);
+        const auto gimbal_ypr = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
+
+        geometry_msgs::msg::Vector3Stamped gimbal_ypr_msg{};
+        gimbal_ypr_msg.header.stamp = msg->header.stamp;
+        gimbal_ypr_msg.header.frame_id = "world";
+        gimbal_ypr_msg.vector.x = gimbal_ypr[0] * 180.0 / CV_PI;
+        gimbal_ypr_msg.vector.y = gimbal_ypr[1] * 180.0 / CV_PI;
+        gimbal_ypr_msg.vector.z = gimbal_ypr[2] * 180.0 / CV_PI;
+        gimbal_yaw_pub->publish(gimbal_ypr_msg);
 
         auto armors = detector.detect(img);
 
@@ -175,6 +197,11 @@ class AutoAim : public rclcpp::Node {
         std_msgs::msg::String tracker_state{};
         tracker_state.data = tracker.state();
         tracker_state_pub->publish(tracker_state);
+        geometry_msgs::msg::Vector3Stamped tracker_state_code_msg{};
+        tracker_state_code_msg.header.stamp = msg->header.stamp;
+        tracker_state_code_msg.header.frame_id = "world";
+        tracker_state_code_msg.vector.x = tracker_state_code(tracker_state.data);
+        tracker_state_code_pub->publish(tracker_state_code_msg);
 
         // 使用迭代器遍历
         auto armor_it = solved_armors.begin();
@@ -220,6 +247,12 @@ class AutoAim : public rclcpp::Node {
             target_point.point.set__y(target_x[2]);
             target_point.point.set__z(target_x[4]);
             target_point_pub->publish(target_point);
+
+            geometry_msgs::msg::Vector3Stamped target_yaw_msg{};
+            target_yaw_msg.header.stamp = msg->header.stamp;
+            target_yaw_msg.header.frame_id = "world";
+            target_yaw_msg.vector.x = target_x[6] * 180.0 / CV_PI;
+            target_yaw_pub->publish(target_yaw_msg);
         }
 
         // Debug output is optional and published once per input frame. A
@@ -257,6 +290,9 @@ class AutoAim : public rclcpp::Node {
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr armor_img_pub;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tracker_state_pub;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr tracker_state_code_pub;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr gimbal_yaw_pub;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr target_yaw_pub;
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr armor_point_pub;
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_point_pub;
     rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr imu_count_pub;

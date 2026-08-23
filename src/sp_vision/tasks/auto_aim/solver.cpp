@@ -270,6 +270,9 @@ std::vector<cv::Point2f> Solver::world2pixel(const std::vector<cv::Point3f> & wo
 
   cv::Mat rvec;
   cv::Mat tvec;
+  // cv::Mat rotation_matrix;
+  // cv::eigen2cv(R_world2camera, rotation_matrix);
+  // cv::Rodrigues(rotation_matrix, rvec);
   cv::eigen2cv(R_world2camera, rvec);
   cv::eigen2cv(t_world2camera, tvec);
 
