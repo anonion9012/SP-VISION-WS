@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>sp_vision</name>
-  <version>0.0.1</version>
+  <version>1.0.0</version>
   <description>SP_Vision_25 fit in ros2 system.</description>
   <maintainer email="1123502086@qq.com">arienne</maintainer>
   <license>Apache-2.0</license>
