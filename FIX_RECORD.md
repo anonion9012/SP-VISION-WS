@@ -1,12 +1,197 @@
 # 开发记录
 
+## 仓库简介
+
+本仓库是基于 `TongjiSuperPower/sp_vision_25` 改造的 ROS2 离线自瞄练习项目。项目使用 ROS2 节点接收 rosbag 中的图像和云台四元数，经过装甲板检测、PnP 解算、坐标变换和 Tracker 跟踪后，将目标位置、姿态和调试状态发布到 ROS2 话题，最后使用 PlotJuggler 观察数据曲线。
+
+仓库主要目录如下：
+
+- `src/sp_vision`：原有自瞄算法和 ROS2 主节点；
+- `src/autoaim_msgs`：`/imu/quaternion` 使用的 `Orienta` 消息定义；
+- `bags`：本地 rosbag 数据，不作为代码依赖提交；
+- `shots`：各里程碑的编译、检测和 PlotJuggler 截图；
+- `FIX_RECORD.md`：本次 ROS2 改造、排查和验证记录。
+
+## 项目说明
+
+### 项目功能
+
+项目将原有单机版自瞄主循环改造成 ROS2 节点，处理链路为：
+
+```text
+rosbag 图像 + 云台四元数
+        ↓
+ROS2 订阅与逐帧配对
+        ↓
+装甲板检测
+        ↓
+PnP 解算与相机/云台/世界坐标变换
+        ↓
+Tracker EKF 跟踪
+        ↓
+目标位置、姿态和状态调试话题
+```
+
+### 输入
+
+| 话题 | 类型 | 说明 |
+| --- | --- | --- |
+| `/image_raw` | `sensor_msgs/msg/Image` | 1280×1024 的 BGR8 图像 |
+| `/imu/quaternion` | `autoaim_msgs/msg/Orienta` | 当前帧对应的云台姿态四元数 |
+
+由于 `Orienta` 消息没有时间戳，本项目使用 rosbag 录制端提供的“图像与姿态同帧同序”约定进行强制匹配。图像的 `header.stamp` 只用于 tracker 的帧时间和输出调试消息的时间戳。
+
+### 输出
+
+| 话题 | 类型 | 说明 |
+| --- | --- | --- |
+| `/debug/armor_img` | `sensor_msgs/msg/Image` | 绘制检测框、分类和坐标轴的 debug 图像 |
+| `/debug/armor_point` | `geometry_msgs/msg/PointStamped` | PnP 解算得到的装甲板世界坐标 |
+| `/debug/target_point` | `geometry_msgs/msg/PointStamped` | EKF 旋转中心的世界坐标 |
+| `/debug/gimbal_yaw` | `geometry_msgs/msg/Vector3Stamped` | `vector.x/y/z` 为云台 yaw/pitch/roll，单位为度 |
+| `/debug/target_yaw` | `geometry_msgs/msg/Vector3Stamped` | `vector.x` 为 EKF 目标 yaw，单位为度 |
+| `/debug/tracker_state` | `std_msgs/msg/String` | 可读的 Tracker 状态字符串 |
+| `/debug/tracker_state_code` | `geometry_msgs/msg/Vector3Stamped` | `vector.x` 为数值化 Tracker 状态 |
+| `/debug/image_count` | `std_msgs/msg/UInt64` | 已处理图像计数 |
+| `/debug/imu_count` | `std_msgs/msg/UInt64` | 已消费 IMU 计数 |
+
+所有新增的 `Vector3Stamped` 和点消息都使用对应图像的 `header.stamp`。Tracker 状态编码为：`lost=0`、`detecting=1`、`tracking=2`、`temp_lost=3`、`switching=4`。
+
+### 参数入口
+
+默认配置为 `src/sp_vision/configs/standard3.yaml`，也可以通过 ROS2 参数指定：
+
+```bash
+ros2 run sp_vision standard_ros2 \
+  --ros-args \
+  -p config_path:=/path/to/standard3.yaml
+```
+
+配置文件包含敌我颜色、模型路径、相机内参、相机到云台外参、云台到 IMU 外参、Tracker 参数和 `ros_imu_force_match` 等参数。
+
+### 复现方法
+
+```bash
+source install/setup.bash
+ros2 run sp_vision standard_ros2
+```
+
+另开终端回放数据：
+
+```bash
+source install/setup.bash
+ros2 bag play bags/move_translate_bag --rate 0.3
+```
+
+再启动 PlotJuggler，观察以下曲线：
+
+```text
+/debug/armor_point/point/x
+/debug/armor_point/point/y
+/debug/armor_point/point/z
+/debug/target_point/point/x
+/debug/target_point/point/y
+/debug/target_point/point/z
+/debug/gimbal_yaw/vector/x
+/debug/gimbal_yaw/vector/y
+/debug/gimbal_yaw/vector/z
+/debug/target_yaw/vector/x
+/debug/tracker_state_code/vector/x
+```
+
+### 当前已知局限
+
+1. 当前 bag 中姿态消息没有 header，只能使用录制顺序配对；更通用的方案是让姿态消息也携带和图像一致的时间戳。
+2. 默认场景假设云台不平移，世界坐标只进行旋转补偿；如果云台或底盘发生平移，需要提供 `t_gimbal2world`。
+3. 当前环境没有可用的 OpenVINO GPU，模型会回退 CPU，回放时应使用较低的 `--rate`，避免处理延迟过大。
+4. debug 图像只有在存在订阅者时才发布，以减少无观察者时的图像编码开销。
+
+
+
+
 ## <div align = "center">M5</div>
 
 ### 实现
+实现关键数据的发布，调整了主节点的运作逻辑。
+![PlotJuggler关键数据绘制图](shots/M5-1.png)
+
+图中左侧为 PlotJuggler 的 ROS2 话题树，右侧曲线包含目标位置、云台 yaw/pitch/roll、目标 yaw 和 Tracker 状态码。
+状态码映射如下：
+```cpp
+if (state == "detecting") return 1;
+if (state == "tracking") return 2;
+if (state == "temp_lost") return 3;
+if (state == "switching") return 4;
+```
+
+![ScreenShot](shots/录屏.webm)
 
 ---
 
+### 修改
+
+1. `standard_ros.cpp` 发布 `debug/armor_point` 和 `debug/target_point`，点坐标统一使用 `world` 作为 `frame_id`。
+2. 新增带时间戳的 `debug/gimbal_yaw` 话题，消息类型为 `geometry_msgs/msg/Vector3Stamped`，`vector.x/y/z` 分别表示 yaw、pitch、roll，单位为度。
+3. 新增带时间戳的 `debug/target_yaw` 话题，发布 Tracker EKF 旋转中心的 yaw，单位为度。
+4. 新增带时间戳的 `debug/tracker_state_code` 话题，使用 `vector.x` 发布 Tracker 状态码，同时保留原有字符串话题 `debug/tracker_state`。
+5. 修正 `Solver::world2pixel()`：将世界系到相机系的旋转矩阵先通过 `cv::Rodrigues()` 转成旋转向量，再交给 `cv::projectPoints()` 使用。
+6. ROS2 IMU 强制匹配模式按 bag 约定按消息顺序消费姿态；IMU 超时不再复用上一帧姿态，而是丢弃当前未配对图像，避免错误姿态继续进入坐标变换。
+7. 删除目标每帧坐标日志，并且只有存在订阅者时才发布 debug 图像，减少 PlotJuggler 和 CPU 回退环境下的处理阻塞。
+
+### 验证
+
+执行以下命令验证 ROS2 节点和调试话题：
+
+```bash
+colcon build --packages-select sp_vision --symlink-install
+source install/setup.bash
+ros2 run sp_vision standard_ros2
+```
+
+确认话题类型：
+
+```bash
+ros2 topic type /debug/gimbal_yaw
+ros2 topic type /debug/target_yaw
+ros2 topic type /debug/tracker_state_code
+```
+
+三个新话题的类型均为 `geometry_msgs/msg/Vector3Stamped`，时间戳使用当前图像消息的 `header.stamp`。
+
+---
+
+### 已知局限
+
+- rosbag 中的 `Orienta` 消息没有自己的时间戳，只能按照录制端保证的图像/姿态同帧同序进行配对；如果上游发生丢帧或顺序改变，仍需要增加带时间戳的姿态消息。
+- 当前默认云台不平移，因此世界坐标只补偿旋转，不包含 `t_gimbal2world`；如果以后加入底盘或云台平移，需要增加对应的位置输入。
+- 当前机器没有可用的 OpenVINO GPU，模型会回退到 CPU，回放速度过快时仍可能出现处理延迟。
+- `target_yaw` 发布的是 EKF 状态中的旋转中心角，不是每一块装甲板的瞬时朝向；EKF 没有独立的 target pitch/roll 状态，因此不发布伪造的 pitch/roll。
+
 ### 所遇问题与解决方案
+
+#### 问题一：PlotJuggler 中目标曲线与云台运动不同步
+
+初始 ROS2 实现使用两个独立订阅回调接收图像和四元数，并在图像回调中同步等待 IMU。图像检测和 CPU 推理耗时较长时，图像回调会阻塞，姿态消费和图像处理进度可能出现偏差。云台运动时，即使真实目标几乎不动，错误的姿态也会被带入 `R_gimbal2world`，最终表现为世界坐标抖动。
+
+解决方案：利用 bag 中图像和四元数同帧同序的约定，在强制匹配模式下按消费顺序取姿态；IMU 不可用时直接丢弃当前未配对图像，不再沿用上一帧姿态。与此同时，删除每帧目标坐标日志，并降低回放速度，减少主回调被日志和模型推理拖慢的情况。
+
+#### 问题二：世界坐标到图像的 debug 投影不正确
+
+`world2pixel()` 原先将 3×3 旋转矩阵直接传给 OpenCV 的 `projectPoints()`。OpenCV 该接口要求的是 Rodrigues 旋转向量，因此 debug 图像中基于世界坐标的投影结果可能不正确。
+
+解决方案：先使用 `cv::Rodrigues()` 将 `R_world2camera` 转换为 `rvec`，再调用 `cv::projectPoints()`。该修复只影响世界坐标的 debug 重投影，不改变 PnP 主流程。
+
+#### 问题三：PlotJuggler 无法直接读取调试话题的时间戳
+
+早期 yaw 和 Tracker 状态使用 `std_msgs/msg/Float64`，消息只有一个 `data` 字段，没有 `header.stamp`。PlotJuggler 只能使用接收时间，难以与图像、目标点和 rosbag 时间轴严格对齐。
+
+解决方案：改用已有的 `geometry_msgs/msg/Vector3Stamped`，使用图像消息的 `header.stamp` 写入调试消息时间戳。云台姿态的 `vector.x/y/z` 分别发布 yaw、pitch、roll；目标 yaw 和 Tracker 状态码使用 `vector.x`。
+
+#### 问题四：状态字符串不适合直接绘制离散曲线
+
+`debug/tracker_state` 使用字符串消息，便于终端查看，但 PlotJuggler 不适合直接对字符串进行数值比较和绘图。
+
+解决方案：保留字符串状态话题，同时新增 `debug/tracker_state_code`：`lost=0`、`detecting=1`、`tracking=2`、`temp_lost=3`、`switching=4`。这样既能查看可读状态，也能在曲线中观察状态切换。
 
 
 ## <div align = "center">M4</div>
@@ -69,7 +254,12 @@ Tracker 稳定工作，PnP 解算修复，并在 ROS2 debug 图像中补充基�
 本次实现装甲板检测与 debug 输出。
 
 ![3-1](shots/M3-1.png)
+
+图中目标装甲板两侧灯条被蓝色边框识别，中间装甲区域被红色轮廓框出，并标注分类结果 `one`，说明传统检测链路已经输出了可供后续 PnP 使用的四点信息。
+
 ![3-2](shots/M3-2.png)
+
+第二张截图展示了另一帧图像中的同一目标检测结果。目标位置发生变化后，检测框仍能覆盖装甲板，说明节点能够持续从图像回调进入 detector 和 debug 图像发布流程。
 
 ---
 
@@ -91,7 +281,7 @@ Tracker 稳定工作，PnP 解算修复，并在 ROS2 debug 图像中补充基�
 
 ### 实现
 
-本次目标是支持接受离线 bag 中的图像和四元数，并按数间戳匹配。
+本次目标是支持接收离线 bag 中的图像和四元数，并按时间戳及录制顺序匹配。
 
 --- 
 
@@ -167,6 +357,8 @@ source install/setup.bash && ros2 run sp_vision standard_ros2
 ### 实现
 M1实现了自瞄系统的主入口ROS2节点化，可使用`colcon build`构建并能成功运行。
 ![构建示图](shots/colcon_build.png)
+
+截图显示 `colcon build` 成功完成 `sp_vision` 包构建，并通过 `ros2 pkg list` 检查到已安装的 `sp_vision` 包，随后能够启动 `standard_ros2` 节点。
 --- 
 
 ### 修改
